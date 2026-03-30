@@ -12,20 +12,18 @@ import yfinance as yf
 import csv
 import logging
 import sys
-from pathlib import Path
-
 from datetime import datetime
+
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from xgboost import XGBClassifier
 
-# Configure logging for Railway
+# Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
     handlers=[
-        logging.FileHandler('bot.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -37,7 +35,7 @@ PAIRS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"]
 DATA_FILE = "trades.csv"
 MIN_TRADES_FOR_TRAINING = 50
 CONFIDENCE_THRESHOLD = 0.65
-SCAN_INTERVAL = 10  # seconds
+SCAN_INTERVAL = 10
 
 # ================= DATA =================
 
@@ -67,17 +65,16 @@ def get_data(symbol, tf="1m"):
 def in_session():
     """Check if current time is within trading sessions"""
     hour = datetime.utcnow().hour
-    # London session: 7-10 UTC, New York session: 12-16 UTC
     return (7 <= hour <= 10) or (12 <= hour <= 16)
 
 def good_entry_time():
-    """Check if entry time is optimal (last 10 seconds of minute)"""
+    """Check if entry time is optimal"""
     return datetime.utcnow().second >= 50
 
 # ================= AI ENGINE =================
 
 class LearningEngine:
-    """Machine learning engine for trade learning and prediction"""
+    """Machine learning engine"""
     
     def __init__(self):
         self.initialize_csv()
@@ -87,8 +84,7 @@ class LearningEngine:
             max_depth=4,
             learning_rate=0.1,
             eval_metric='logloss',
-            random_state=42,
-            use_label_encoder=False
+            random_state=42
         )
         
         self.trained = False
@@ -110,7 +106,7 @@ class LearningEngine:
                 logger.error(f"Error creating CSV file: {e}")
     
     def save_trade(self, features, result):
-        """Save trade outcome to CSV for training"""
+        """Save trade outcome"""
         try:
             timestamp = datetime.utcnow().isoformat()
             with open(DATA_FILE, "a", newline="") as f:
@@ -131,7 +127,7 @@ class LearningEngine:
             return False
     
     def train(self):
-        """Train the XGBoost model on historical trade data"""
+        """Train the model"""
         try:
             if not os.path.exists(DATA_FILE):
                 logger.info("No trade data available for training")
@@ -143,7 +139,6 @@ class LearningEngine:
                 logger.info(f"Not enough data for training. Need {MIN_TRADES_FOR_TRAINING} samples, have {len(df)}")
                 return
             
-            # Prepare features and target
             feature_cols = ["trend", "liquidity", "rejection", "momentum", "rsi"]
             X = df[feature_cols]
             y = df["result"]
@@ -152,17 +147,16 @@ class LearningEngine:
             self.trained = True
             self.training_samples = len(df)
             
-            # Calculate accuracy on training data
             predictions = self.model.predict(X)
             accuracy = (predictions == y).mean()
             
-            logger.info(f"Model trained successfully on {len(df)} samples. Training accuracy: {accuracy:.2%}")
+            logger.info(f"Model trained on {len(df)} samples. Accuracy: {accuracy:.2%}")
             
         except Exception as e:
             logger.error(f"Error training model: {e}")
     
     def predict(self, features):
-        """Predict probability of successful trade"""
+        """Predict probability"""
         if not self.trained:
             return 0.5
         
@@ -184,25 +178,24 @@ class LearningEngine:
 # ================= STRATEGY =================
 
 class Strategy:
-    """Trading strategy logic"""
+    """Trading strategy"""
     
     def __init__(self, learner):
         self.learner = learner
     
     def liquidity_grab(self, df):
-        """Detect liquidity grab pattern"""
+        """Detect liquidity grab"""
         try:
             if len(df) < 10:
                 return False
             lows = df['low'].rolling(10).min()
             last = df.iloc[-1]
             return last['low'] < lows.iloc[-2] and last['close'] > lows.iloc[-2]
-        except Exception as e:
-            logger.debug(f"Liquidity grab error: {e}")
+        except:
             return False
     
     def rejection(self, df):
-        """Detect price rejection pattern (long wick)"""
+        """Detect rejection"""
         try:
             if len(df) < 1:
                 return False
@@ -210,36 +203,31 @@ class Strategy:
             body = abs(last['close'] - last['open'])
             wick = min(last['open'], last['close']) - last['low']
             return body > 0 and wick > body * 3
-        except Exception as e:
-            logger.debug(f"Rejection detection error: {e}")
+        except:
             return False
     
     def momentum(self, df):
-        """Check momentum direction"""
+        """Check momentum"""
         try:
             if len(df) < 2:
                 return False
             return df.iloc[-1]['close'] > df.iloc[-2]['close']
-        except Exception as e:
-            logger.debug(f"Momentum check error: {e}")
+        except:
             return False
     
     def analyze(self, symbol):
-        """Analyze symbol and generate signal if conditions met"""
+        """Analyze symbol"""
         try:
             df = get_data(symbol)
             
             if df.empty or len(df) < 200:
-                logger.debug(f"Insufficient data for {symbol}")
                 return None
             
-            # Calculate indicators
             df['ema'] = ta.ema(df['close'], length=200)
             df['rsi'] = ta.rsi(df['close'], length=14)
             
             last = df.iloc[-1]
             
-            # Check for NaN values
             if pd.isna(last['ema']) or pd.isna(last['rsi']):
                 return None
             
@@ -251,7 +239,6 @@ class Strategy:
                 "rsi": last['rsi'] < 35
             }
             
-            # Require at least 4 conditions to be true
             score = sum(features.values())
             if score < 4:
                 return None
@@ -276,7 +263,7 @@ class Strategy:
 # ================= RESULT TRACKING =================
 
 async def track_result(symbol, entry_price, direction, features, learner):
-    """Track trade result after expiry"""
+    """Track trade result"""
     await asyncio.sleep(30)
     
     try:
@@ -292,7 +279,7 @@ async def track_result(symbol, entry_price, direction, features, learner):
         learner.train()
         
         result_text = "WIN" if result else "LOSS"
-        logger.info(f"Tracked {symbol}: {result_text} - Entry: {entry_price:.5f}, Exit: {last['close']:.5f}")
+        logger.info(f"Tracked {symbol}: {result_text}")
         
     except Exception as e:
         logger.error(f"Error tracking result: {e}")
@@ -300,232 +287,62 @@ async def track_result(symbol, entry_price, direction, features, learner):
 # ================= EXECUTION HOOK =================
 
 def execute_trade_stub(signal):
-    """
-    ⚠️ SAFE PLACEHOLDER
+    """Execute trade (placeholder)"""
+    logger.info(f"🔔 SIGNAL: {signal['symbol']} @ {signal['price']:.5f} | Confidence: {signal['probability']*100:.1f}%")
     
-    Replace this with actual execution logic:
-    - Broker API integration
-    - Webhook to external system
-    - Manual alert system
-    - Email/SMS notification
-    """
-    logger.info(f"🔔 SIGNAL: {signal['symbol']} {signal['direction']} @ {signal['price']:.5f} | Confidence: {signal['probability']*100:.1f}%")
-    
-    # Example: Write to file for external processing
     try:
         with open("signals.txt", "a") as f:
             f.write(f"{signal['timestamp']} | {signal['symbol']} | {signal['direction']} | {signal['price']:.5f} | {signal['probability']*100:.1f}%\n")
     except Exception as e:
-        logger.error(f"Error writing signal to file: {e}")
+        logger.error(f"Error writing signal: {e}")
 
 # ================= TELEGRAM BOT =================
 
 class SniperBot:
-    """Main Telegram bot class"""
+    """Main bot class"""
     
     def __init__(self):
         self.token = os.getenv("TELEGRAM_BOT_TOKEN")
         if not self.token:
-            logger.error("TELEGRAM_BOT_TOKEN environment variable not set!")
-            raise ValueError("TELEGRAM_BOT_TOKEN environment variable not set. Please add it in Railway variables.")
+            raise ValueError("TELEGRAM_BOT_TOKEN environment variable not set!")
         
         logger.info("Bot token loaded successfully")
         self.learner = LearningEngine()
         self.strategy = Strategy(self.learner)
         self.running = False
-        self.scan_task = None
         self.update = None
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start command handler"""
+        """Start command"""
         welcome_msg = (
             "🤖 *XGBOOST AI TRADING BOT*\n\n"
-            "I analyze forex pairs using machine learning and technical indicators.\n\n"
+            "I analyze forex pairs using machine learning.\n\n"
             "*Commands:*\n"
-            "🔍 `/scan` - Start AI market scanning\n"
+            "🔍 `/scan` - Start scanning\n"
             "🛑 `/stop` - Stop scanning\n"
-            "📊 `/status` - Check bot status\n"
-            "📈 `/stats` - View model statistics\n\n"
+            "📊 `/status` - Bot status\n"
+            "📈 `/stats` - View statistics\n\n"
             "*Active Pairs:* " + ", ".join(PAIRS)
         )
-        
         await update.message.reply_text(welcome_msg, parse_mode='Markdown')
         logger.info(f"User {update.effective_user.id} started the bot")
     
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Status command handler"""
+        """Status command"""
         status_text = f"📊 *Bot Status*\n\n"
         status_text += f"*Scanning:* {'🟢 Active' if self.running else '🔴 Inactive'}\n"
         status_text += f"*Model Trained:* {'✅ Yes' if self.learner.trained else '❌ No'}\n"
         status_text += f"*Training Samples:* {self.learner.training_samples}\n"
-        status_text += f"*Trading Session:* {'🟢 Open' if in_session() else '🔴 Closed'}\n"
-        status_text += f"*Monitored Pairs:* {', '.join(PAIRS)}\n"
-        status_text += f"*Confidence Threshold:* {CONFIDENCE_THRESHOLD*100:.0f}%\n"
-        status_text += f"*Scan Interval:* {SCAN_INTERVAL}s"
+        status_text += f"*Trading Session:* {'🟢 Open' if in_session() else '🔴 Closed'}"
         
         await update.message.reply_text(status_text, parse_mode='Markdown')
     
     async def stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Statistics command handler"""
+        """Statistics command"""
         try:
             if not os.path.exists(DATA_FILE):
                 await update.message.reply_text("No trade data available yet.")
                 return
             
             df = pd.read_csv(DATA_FILE)
-            if len(df) == 0:
-                await update.message.reply_text("No trades recorded yet.")
-                return
-            
-            total_trades = len(df)
-            wins = df['result'].sum()
-            win_rate = (wins / total_trades) * 100
-            
-            stats_text = f"📈 *Model Statistics*\n\n"
-            stats_text += f"*Total Trades:* {total_trades}\n"
-            stats_text += f"*Winning Trades:* {int(wins)}\n"
-            stats_text += f"*Losing Trades:* {total_trades - int(wins)}\n"
-            stats_text += f"*Win Rate:* {win_rate:.1f}%\n"
-            stats_text += f"*Model Status:* {'✅ Active' if self.learner.trained else '⏳ Training Needed'}"
-            
-            await update.message.reply_text(stats_text, parse_mode='Markdown')
-            
-        except Exception as e:
-            logger.error(f"Error getting stats: {e}")
-            await update.message.reply_text("Error retrieving statistics.")
-    
-    async def scan_loop(self):
-        """Main scanning loop"""
-        if not self.update:
-            logger.error("No update object available for scan loop")
-            return
-        
-        await self.update.message.reply_text(
-            "👁️ *AI SCANNING ACTIVE*\n\n"
-            "Monitoring markets for high-probability setups...\n"
-            "Signals will appear here when detected.",
-            parse_mode='Markdown'
-        )
-        
-        while self.running:
-            try:
-                # Check if in trading session
-                if not in_session():
-                    await asyncio.sleep(30)
-                    continue
-                
-                # Scan all pairs
-                for pair in PAIRS:
-                    if not self.running:
-                        break
-                    
-                    result = self.strategy.analyze(pair)
-                    
-                    if result:
-                        msg = (
-                            f"🎯 *TRADE SIGNAL*\n\n"
-                            f"*Symbol:* {result['symbol']}\n"
-                            f"*Direction:* 🔼 {result['direction']}\n"
-                            f"*Confidence:* {result['probability']*100:.1f}%\n"
-                            f"*Entry Price:* {result['price']:.5f}\n"
-                            f"*Expiry:* 30 seconds\n\n"
-                            f"*Signal Conditions:*\n"
-                            f"• Trend: {'✓' if result['features']['trend'] else '✗'}\n"
-                            f"• Liquidity: {'✓' if result['features']['liquidity'] else '✗'}\n"
-                            f"• Rejection: {'✓' if result['features']['rejection'] else '✗'}\n"
-                            f"• Momentum: {'✓' if result['features']['momentum'] else '✗'}\n"
-                            f"• RSI: {'✓' if result['features']['rsi'] else '✗'}"
-                        )
-                        
-                        await self.update.message.reply_text(msg, parse_mode='Markdown')
-                        
-                        # Execute trade
-                        execute_trade_stub(result)
-                        
-                        # Track result asynchronously
-                        asyncio.create_task(
-                            track_result(
-                                result["symbol"],
-                                result["price"],
-                                result["direction"],
-                                result["features"],
-                                self.learner
-                            )
-                        )
-                
-                await asyncio.sleep(SCAN_INTERVAL)
-                
-            except Exception as e:
-                logger.error(f"Error in scan loop: {e}")
-                await asyncio.sleep(5)
-        
-        await self.update.message.reply_text("👁️ AI scanning stopped.")
-    
-    async def scan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Scan command handler"""
-        if self.running:
-            await update.message.reply_text("⚠️ Bot is already scanning! Use /stop first.")
-            return
-        
-        self.running = True
-        self.update = update
-        asyncio.create_task(self.scan_loop())
-    
-    async def stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Stop command handler"""
-        if not self.running:
-            await update.message.reply_text("⚠️ Bot is not scanning.")
-            return
-        
-        self.running = False
-        await update.message.reply_text("🛑 *Bot stopped scanning*", parse_mode='Markdown')
-        logger.info(f"User {update.effective_user.id} stopped the bot")
-    
-    async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle errors"""
-        logger.error(f"Update {update} caused error {context.error}")
-        try:
-            if update and update.effective_message:
-                await update.effective_message.reply_text("⚠️ An error occurred. Please try again.")
-        except:
-            pass
-    
-    def run(self):
-        """Run the bot"""
-        try:
-            # Create application
-            app = Application.builder().token(self.token).build()
-            
-            # Add handlers
-            app.add_handler(CommandHandler("start", self.start))
-            app.add_handler(CommandHandler("scan", self.scan))
-            app.add_handler(CommandHandler("stop", self.stop))
-            app.add_handler(CommandHandler("status", self.status))
-            app.add_handler(CommandHandler("stats", self.stats))
-            app.add_error_handler(self.error_handler)
-            
-            logger.info("=" * 50)
-            logger.info("Bot started successfully!")
-            logger.info(f"Monitoring pairs: {', '.join(PAIRS)}")
-            logger.info(f"Confidence threshold: {CONFIDENCE_THRESHOLD*100}%")
-            logger.info("=" * 50)
-            
-            # Start polling
-            app.run_polling(allowed_updates=Update.ALL_TYPES)
-            
-        except Exception as e:
-            logger.error(f"Error starting bot: {e}")
-            raise
-
-# ================= RUN =================
-
-if __name__ == "__main__":
-    try:
-        bot = SniperBot()
-        bot.run()
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-        sys.exit(0)
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        sys.exit(1)
+            if len(df) == 0
