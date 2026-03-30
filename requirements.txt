@@ -3,5 +3,3 @@ pandas==2.0.3
 pandas-ta==0.3.14b
 yfinance==0.2.33
 xgboost==2.0.3
-setuptools>=65.0.0
-wheel
